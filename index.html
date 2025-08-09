@@ -1,93 +1,97 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MediaPipe Hands Demo Simple</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>MediaPipe + Goku Optimizado</title>
 <style>
-html,body {margin:0;padding:0;background:black;color:white;font-family:sans-serif;height:100%;}
-#video {position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;}
-#canvas {position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;}
-#status {position:absolute;top:10px;left:10px;background:rgba(0,0,0,0.5);padding:5px 10px;border-radius:5px;}
-button {position:absolute;top:10px;right:10px;z-index:10;}
+  html, body { margin:0; padding:0; height:100%; background:black; color:white; font-family:sans-serif; overflow:hidden; }
+  #video, #overlayCanvas { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; }
+  #overlayCanvas { pointer-events:none; }
+  #status { position:absolute; bottom:10px; left:10px; background:rgba(0,0,0,0.5); padding:5px 10px; border-radius:5px; z-index:10; }
 </style>
 </head>
 <body>
 <video id="video" autoplay playsinline></video>
-<canvas id="canvas"></canvas>
+<canvas id="overlayCanvas"></canvas>
 <div id="status">Cargando...</div>
-<button id="mirrorBtn">Toggle Mirror</button>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 
 <script>
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
-const statusEl = document.getElementById('status');
-const mirrorBtn = document.getElementById('mirrorBtn');
+(async () => {
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('overlayCanvas');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
 
-let mirror = true;
+  const gokuImg = new Image();
+  gokuImg.src = 'https://cdn.pixabay.com/photo/2024/08/12/goku-ai-generated.png'; // Imagen libre de derechos
 
-mirrorBtn.onclick = () => {
-  mirror = !mirror;
-};
-
-navigator.mediaDevices.getUserMedia({
-  video: { facingMode: 'environment' }, // cambia a 'user' para frontal
-  audio: false
-}).then(stream => {
-  video.srcObject = stream;
-}).catch(err => {
-  statusEl.textContent = "Error cámara: " + err.name;
-});
-
-function resizeCanvas(){
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-}
-video.onloadedmetadata = resizeCanvas;
-window.onresize = resizeCanvas;
-
-const hands = new Hands({locateFile: file => 
-  `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-});
-hands.setOptions({
-  selfieMode: false,
-  maxNumHands: 2,
-  modelComplexity: 1,
-  minDetectionConfidence: 0.5,
-  minTrackingConfidence: 0.5
-});
-
-hands.onResults(results => {
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.save();
-  if(mirror){
-    ctx.translate(canvas.width,0);
-    ctx.scale(-1,1);
-  }
-  ctx.drawImage(results.image,0,0,canvas.width,canvas.height);
-  if(results.multiHandLandmarks){
-    results.multiHandLandmarks.forEach(landmarks => {
-      drawConnectors(ctx, landmarks, HAND_CONNECTIONS,{color:'#0f0', lineWidth:2});
-      drawLandmarks(ctx, landmarks,{color:'#f00', radius:4});
+  // Cámara optimizada
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: 'environment' },
+      audio: false
     });
+    video.srcObject = stream;
+  } catch (e) {
+    statusEl.textContent = 'Error cámara: ' + e.message;
+    return;
   }
-  ctx.restore();
-  statusEl.textContent = results.multiHandLandmarks.length > 0 
-    ? `Manos detectadas: ${results.multiHandLandmarks.length}`
-    : 'No hay manos detectadas';
-});
 
-async function loop(){
-  if(video.readyState >= 2){
-    await hands.send({image: video});
+  function resizeCanvas(){
+    canvas.width = video.videoWidth || window.innerWidth;
+    canvas.height = video.videoHeight || window.innerHeight;
   }
-  requestAnimationFrame(loop);
-}
-loop();
+  video.onloadedmetadata = resizeCanvas;
+  window.onresize = resizeCanvas;
+
+  // MediaPipe Hands optimizado
+  const hands = new Hands({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+  hands.setOptions({
+    selfieMode: false,
+    maxNumHands: 1,
+    modelComplexity: 0, // más rápido
+    minDetectionConfidence: 0.6,
+    minTrackingConfidence: 0.6
+  });
+
+  let handLandmarks = null;
+  hands.onResults(results => {
+    handLandmarks = results.multiHandLandmarks && results.multiHandLandmarks[0] || null;
+    statusEl.textContent = handLandmarks ? 'Mano detectada' : 'No se detecta mano';
+  });
+
+  // Procesar menos frames (~15fps)
+  let lastProcess = 0;
+  async function processFrame(timestamp){
+    if (timestamp - lastProcess > 66) { // cada ~66ms
+      await hands.send({image: video});
+      lastProcess = timestamp;
+    }
+    requestAnimationFrame(processFrame);
+  }
+  processFrame();
+
+  // Dibujar
+  function draw(){
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (handLandmarks) {
+      const ix = handLandmarks[0].x * canvas.width;
+      const iy = handLandmarks[0].y * canvas.height;
+
+      ctx.beginPath();
+      ctx.arc(ix, iy, 15, 0, 2*Math.PI);
+      ctx.fillStyle = 'rgba(0,255,0,0.7)';
+      ctx.fill();
+
+      ctx.drawImage(gokuImg, canvas.width/2 - 50, canvas.height/2 - 150, 100, 150);
+    }
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
 </script>
 </body>
 </html>
