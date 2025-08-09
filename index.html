@@ -1,210 +1,93 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>MediaPipe Hands - Demo móvil (single HTML)</title>
-  <style>
-    html,body{height:100%;margin:0;background:#000;color:#fff;font-family:Arial,Helvetica,sans-serif}
-    #container{position:relative;width:100%;height:100%;overflow:hidden}
-    video#input_video{
-      position: absolute; left:0; top:0; width:100%; height:100%; object-fit:cover;
-      transform: scaleX(-1); /* espejo para experiencia tipo selfie; desactivar si no lo querés */
-    }
-    canvas#output_canvas{
-      position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none;
-      transform: scaleX(-1); /* mantener mismo espejo que el video */
-    }
-    #controls{
-      position: absolute; left:10px; top:10px; z-index:10;
-      background: rgba(0,0,0,0.5); padding:8px; border-radius:8px;
-      display:flex; gap:8px; align-items:center;
-    }
-    button{background:#1e1e1e;color:#fff;border:1px solid #444;padding:6px 10px;border-radius:6px}
-    label{font-size:13px}
-    #status{
-      position:absolute; left:10px; bottom:10px; z-index:10;
-      background:rgba(0,0,0,0.5); padding:8px;border-radius:8px;font-size:13px;
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MediaPipe Hands Demo Simple</title>
+<style>
+html,body {margin:0;padding:0;background:black;color:white;font-family:sans-serif;height:100%;}
+#video {position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;}
+#canvas {position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;}
+#status {position:absolute;top:10px;left:10px;background:rgba(0,0,0,0.5);padding:5px 10px;border-radius:5px;}
+button {position:absolute;top:10px;right:10px;z-index:10;}
+</style>
 </head>
 <body>
-  <div id="container">
-    <video id="input_video" autoplay playsinline></video>
-    <canvas id="output_canvas"></canvas>
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+<div id="status">Cargando...</div>
+<button id="mirrorBtn">Toggle Mirror</button>
 
-    <div id="controls">
-      <label>
-        <input id="multiHand" type="checkbox" checked /> Multi-hand
-      </label>
-      <button id="toggleMirror">Toggle Mirror</button>
-      <button id="recenter">Reiniciar</button>
-    </div>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 
-    <div id="status">Cargando modelos...</div>
-  </div>
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const mirrorBtn = document.getElementById('mirrorBtn');
 
-  <!-- MediaPipe CDN scripts (jsDelivr) -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+let mirror = true;
 
-  <script>
-  (async () => {
-    const videoElement = document.getElementById('input_video');
-    const canvasElement = document.getElementById('output_canvas');
-    const ctx = canvasElement.getContext('2d');
-    const statusEl = document.getElementById('status');
-    const multiHandCheckbox = document.getElementById('multiHand');
-    const toggleMirrorBtn = document.getElementById('toggleMirror');
-    const recenterBtn = document.getElementById('recenter');
+mirrorBtn.onclick = () => {
+  mirror = !mirror;
+};
 
-    // Ajustar canvas al tamaño real en píxeles (para mobile retina)
-    function fitCanvas() {
-      const w = videoElement.videoWidth || window.innerWidth;
-      const h = videoElement.videoHeight || window.innerHeight;
-      canvasElement.width = w;
-      canvasElement.height = h;
-      canvasElement.style.width = '100%';
-      canvasElement.style.height = '100%';
-    }
-    window.addEventListener('resize', () => {
-      fitCanvas();
+navigator.mediaDevices.getUserMedia({
+  video: { facingMode: 'environment' }, // cambia a 'user' para frontal
+  audio: false
+}).then(stream => {
+  video.srcObject = stream;
+}).catch(err => {
+  statusEl.textContent = "Error cámara: " + err.name;
+});
+
+function resizeCanvas(){
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+}
+video.onloadedmetadata = resizeCanvas;
+window.onresize = resizeCanvas;
+
+const hands = new Hands({locateFile: file => 
+  `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+hands.setOptions({
+  selfieMode: false,
+  maxNumHands: 2,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+hands.onResults(results => {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.save();
+  if(mirror){
+    ctx.translate(canvas.width,0);
+    ctx.scale(-1,1);
+  }
+  ctx.drawImage(results.image,0,0,canvas.width,canvas.height);
+  if(results.multiHandLandmarks){
+    results.multiHandLandmarks.forEach(landmarks => {
+      drawConnectors(ctx, landmarks, HAND_CONNECTIONS,{color:'#0f0', lineWidth:2});
+      drawLandmarks(ctx, landmarks,{color:'#f00', radius:4});
     });
+  }
+  ctx.restore();
+  statusEl.textContent = results.multiHandLandmarks.length > 0 
+    ? `Manos detectadas: ${results.multiHandLandmarks.length}`
+    : 'No hay manos detectadas';
+});
 
-    // Configurar MediaPipe Hands
-    const hands = new Hands({
-      locateFile: (file) => {
-        // buscar modelos/archivos necesarios en CDN
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-      }
-    });
-
-    hands.setOptions({
-      selfieMode: true,       // espejo por defecto (útil para experiencia movil tipo selfie)
-      maxNumHands: 2,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.6,
-      minTrackingConfidence: 0.6
-    });
-
-    let lastTime = performance.now();
-    let fps = 0;
-
-    hands.onResults(results => {
-      // Draw overlay
-      fitCanvas();
-      ctx.clearRect(0,0,canvasElement.width, canvasElement.height);
-
-      // Dibujar video ligeramente atenuado (opcional)
-      // ctx.fillStyle = 'rgba(0,0,0,0.0)';
-      // ctx.fillRect(0,0,canvasElement.width,canvasElement.height);
-
-      // Dibujar landmarks y conexiones
-      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-        for (let i = 0; i < results.multiHandLandmarks.length; ++i) {
-          const landmarks = results.multiHandLandmarks[i];
-          // Dibujar conexiones (bones)
-          drawConnectors(ctx, landmarks, HAND_CONNECTIONS,
-                         {color: '#00FF9A', lineWidth: 4});
-          // Dibujar puntos
-          drawLandmarks(ctx, landmarks, {color: '#FF2C55', lineWidth: 2, radius: 4});
-        }
-      }
-
-      // Dibujar FPS
-      const now = performance.now();
-      const dt = now - lastTime;
-      lastTime = now;
-      fps = 1000 / dt;
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      ctx.fillRect(8, 8, 110, 28);
-      ctx.fillStyle = '#fff';
-      ctx.font = '16px sans-serif';
-      ctx.fillText(`FPS: ${fps.toFixed(0)}`, 14, 28);
-
-      // Mensaje status
-      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
-        statusEl.textContent = 'Manos no detectadas — coloca la mano frente a la cámara';
-      } else {
-        statusEl.textContent = `Manos detectadas: ${results.multiHandLandmarks.length}`;
-      }
-    });
-
-    // Cámara -> MediaPipe via Camera utils (maneja getUserMedia y tamaño)
-    let camera = null;
-
-    async function startCamera() {
-      // Intentar abrir cámara trasera (environment) si está disponible
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false
-        });
-        videoElement.srcObject = stream;
-
-        // wait for metadata to set dimensions
-        await new Promise(res => {
-          videoElement.onloadedmetadata = () => {
-            fitCanvas();
-            res();
-          };
-        });
-
-        // Use MediaPipe Camera helper for consistent frame pumping (if available)
-        if (typeof Camera !== 'undefined') {
-          camera = new Camera(videoElement, {
-            onFrame: async () => {
-              await hands.send({image: videoElement});
-            },
-            width: videoElement.videoWidth || 1280,
-            height: videoElement.videoHeight || 720
-          });
-          camera.start();
-        } else {
-          // Fallback: manual loop
-          async function loop() {
-            if (videoElement.readyState >= 2) {
-              await hands.send({image: videoElement});
-            }
-            requestAnimationFrame(loop);
-          }
-          loop();
-        }
-
-        statusEl.textContent = 'Cámara iniciada. Mueve la mano frente a la cámara.';
-      } catch (err) {
-        statusEl.textContent = 'Error accediendo a la cámara: ' + err.message;
-        console.error(err);
-      }
-    }
-
-    // Controls
-    multiHandCheckbox.addEventListener('change', () => {
-      hands.setOptions({ maxNumHands: multiHandCheckbox.checked ? 2 : 1 });
-    });
-
-    toggleMirrorBtn.addEventListener('click', () => {
-      const videoMirror = videoElement.style.transform;
-      if (videoMirror.includes('scaleX(-1)')) {
-        videoElement.style.transform = '';
-        canvasElement.style.transform = '';
-      } else {
-        videoElement.style.transform = 'scaleX(-1)';
-        canvasElement.style.transform = 'scaleX(-1)';
-      }
-    });
-
-    recenterBtn.addEventListener('click', () => {
-      statusEl.textContent = 'Reiniciado. Esperando detección...';
-    });
-
-    // Start everything
-    startCamera();
-
-    // Permisos / compatibilidad note
-    // Si estás en iOS Safari: asegúrate usar HTTPS y iOS >= 14 para getUserMedia trasera.
-  })();
-  </script>
+async function loop(){
+  if(video.readyState >= 2){
+    await hands.send({image: video});
+  }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
 </body>
 </html>
