@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-<title>Luna en AR - Demo</title>
+<title>Luna en AR - Demo con flechas</title>
 <style>
   body, html {
     margin: 0; padding: 0; overflow: hidden; background: black;
@@ -50,7 +50,6 @@
   const ctx = canvas.getContext('2d');
   const info = document.getElementById('info');
 
-  // Ajustar canvas a tamaño ventana
   function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
@@ -58,10 +57,9 @@
   window.addEventListener('resize', resize);
   resize();
 
-  // Acceso cámara trasera
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { exact: "environment" } },
+      video: { facingMode: "environment" },
       audio: false
     });
     video.srcObject = stream;
@@ -70,7 +68,6 @@
     return;
   }
 
-  // Obtener ubicación
   function getPosition() {
     return new Promise((res, rej) => {
       if (!navigator.geolocation) {
@@ -97,75 +94,118 @@
 
   info.textContent = "Apunta el celular hacia el cielo para ver la luna (círculo rojo).";
 
-  // Variables para orientación
-  let alpha = 0, beta = 0, gamma = 0; // en grados
+  let alpha = 0, beta = 0, gamma = 0;
 
   window.addEventListener('deviceorientation', (event) => {
-    // event.alpha = rotación respecto al norte (compass)
-    // event.beta = inclinación frontal (nodding)
-    // event.gamma = inclinación lateral (head tilt)
     alpha = event.alpha || 0;
     beta = event.beta || 0;
     gamma = event.gamma || 0;
   }, true);
 
-  // Convertir grados a radianes
   const toRad = deg => deg * Math.PI / 180;
   const toDeg = rad => rad * 180 / Math.PI;
 
-  // Función para calcular la posición de la luna en coordenadas azimut y altitud
   function getMoonPos(date, lat, lon) {
     const moonPos = SunCalc.getMoonPosition(date, lat, lon);
     return {
-      azimuth: moonPos.azimuth,   // radianes desde el norte, positivo hacia el este (sur en el medio)
-      altitude: moonPos.altitude  // radianes sobre el horizonte
+      azimuth: moonPos.azimuth,
+      altitude: moonPos.altitude
     };
   }
 
-  // Función para mapear azimut y altitud a coordenadas en pantalla
-  // Se asume que el teléfono apunta hacia un ángulo alpha (compass)
-  // y que beta es la inclinación hacia arriba (+90 es pantalla mirando arriba)
-  // gamma se ignora para simplicidad
+  // Dibujar flecha apuntando en dirección (x,y) desde centro de pantalla
+  // size controla tamaño base
+  function drawArrow(x, y, angle, size = 40, color = 'rgba(255,0,0,0.8)') {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(0, -size);
+    ctx.lineTo(size * 0.6, size);
+    ctx.lineTo(0, size * 0.4);
+    ctx.lineTo(-size * 0.6, size);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   function mapMoonToScreen(azimuth, altitude, alpha, beta) {
-    // Ajustamos azimut y alpha para que 0 sea norte
-    // alpha va de 0 a 360, azimuth de -PI a PI
-    // Convertimos alpha a radianes
     const alphaRad = toRad(alpha);
-    // Diferencia horizontal entre orientación y luna
     let deltaAz = azimuth - alphaRad;
-    // Normalizar entre -PI y PI
     if (deltaAz > Math.PI) deltaAz -= 2 * Math.PI;
     if (deltaAz < -Math.PI) deltaAz += 2 * Math.PI;
 
-    // Consideramos que el rango horizontal visible en pantalla es +/- 45 grados (pi/4)
-    // Si la luna está fuera de ese rango, no la mostramos
-
-    const horizontalFOV = Math.PI / 2; // 90 grados FOV horizontal para más margen
-
-    if (Math.abs(deltaAz) > horizontalFOV / 2) return null;
-
-    // Para vertical, beta = 0 es horizontal, +90 es apuntando al cielo
-    // La altitud está entre -pi/2 y +pi/2
-    // Asumimos rango vertical visible de 90 grados (pi/2)
-    const verticalFOV = Math.PI / 2; // 90 grados vertical
+    const horizontalFOV = Math.PI / 2; // 90 grados
+    const verticalFOV = Math.PI / 2;
 
     // Diferencia vertical
     const deltaAlt = altitude - toRad(beta);
 
-    if (deltaAlt < -verticalFOV / 2 || deltaAlt > verticalFOV / 2) return null;
+    // Si dentro del rango, devolvemos coords en pantalla
+    if (Math.abs(deltaAz) <= horizontalFOV / 2 && deltaAlt >= -verticalFOV / 2 && deltaAlt <= verticalFOV / 2) {
+      const x = (canvas.width / 2) + (deltaAz / (horizontalFOV / 2)) * (canvas.width / 2);
+      const y = (canvas.height / 2) - (deltaAlt / (verticalFOV / 2)) * (canvas.height / 2);
+      return { visible: true, x, y };
+    } else {
+      // Fuera de rango, calcular posición para flecha en borde
+      // Calculamos el ángulo en pantalla donde debería apuntar la luna
+      // Usamos deltaAz para la dirección horizontal, y deltaAlt para vertical
+      // Simplificamos: el vector apunta desde centro hacia (deltaAz, deltaAlt)
 
-    // Mapeamos a pantalla
-    // x = centro pantalla + (deltaAz / (horizontalFOV/2)) * (ancho/2)
-    // y = centro pantalla - (deltaAlt / (verticalFOV/2)) * (alto/2)
-    // Nota y invertida porque pantalla tiene y hacia abajo
+      // Normalizamos deltaAz y deltaAlt al rango -1..1
+      let normX = deltaAz / (horizontalFOV / 2);
+      let normY = -deltaAlt / (verticalFOV / 2); // invertido para pantalla
 
-    const x = (canvas.width / 2) + (deltaAz / (horizontalFOV / 2)) * (canvas.width / 2);
-    const y = (canvas.height / 2) - (deltaAlt / (verticalFOV / 2)) * (canvas.height / 2);
+      // Limitar normX y normY a [-1.5,1.5] para evitar flechas muy lejanas
+      normX = Math.max(-1.5, Math.min(1.5, normX));
+      normY = Math.max(-1.5, Math.min(1.5, normY));
 
-    return { x, y };
+      // Calculamos el ángulo desde el centro
+      const angle = Math.atan2(normY, normX);
+
+      // Posición en borde del canvas con un margen de 30 px
+      const margin = 30;
+      const w = canvas.width;
+      const h = canvas.height;
+      const cx = w / 2;
+      const cy = h / 2;
+
+      // Encontrar punto en el borde siguiendo ángulo
+      // Calculo de intersección con rectángulo
+      const tanAngle = Math.tan(angle);
+
+      let x = 0, y = 0;
+      if (angle >= -Math.PI / 4 && angle <= Math.PI / 4) {
+        // Derecho
+        x = w - margin;
+        y = cy - (w / 2 - margin) * tanAngle;
+      } else if (angle > Math.PI / 4 && angle < 3 * Math.PI / 4) {
+        // Arriba
+        y = margin;
+        x = cx + (cy - margin) / tanAngle;
+      } else if (angle >= 3 * Math.PI / 4 || angle <= -3 * Math.PI / 4) {
+        // Izquierda
+        x = margin;
+        y = cy + (w / 2 - margin) * tanAngle;
+      } else {
+        // Abajo
+        y = h - margin;
+        x = cx - (cy - margin) / tanAngle;
+      }
+
+      // Limitamos x,y para que estén dentro del canvas
+      x = Math.max(margin, Math.min(w - margin, x));
+      y = Math.max(margin, Math.min(h - margin, y));
+
+      // Tamaño de flecha proporcional a distancia angular (máx 40)
+      const dist = Math.min(1.5, Math.sqrt(normX * normX + normY * normY));
+      const size = 20 + 20 * dist;
+
+      return { visible: false, x, y, angle, size };
+    }
   }
 
-  // Loop para dibujar el marcador
   function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -173,7 +213,8 @@
     const moonPos = getMoonPos(now, lat, lon);
     const screenPos = mapMoonToScreen(moonPos.azimuth, moonPos.altitude, alpha, beta);
 
-    if (screenPos) {
+    if (screenPos.visible) {
+      // Dibujar punto rojo en la luna
       ctx.beginPath();
       ctx.arc(screenPos.x, screenPos.y, 20, 0, 2 * Math.PI);
       ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
@@ -181,6 +222,29 @@
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'white';
       ctx.stroke();
+    } else {
+      // Dibujar flecha apuntando a luna
+      drawArrow(screenPos.x, screenPos.y, screenPos.angle, screenPos.size);
+
+      // Mostrar texto direccional simple
+      const marginText = 10;
+      ctx.fillStyle = 'white';
+      ctx.font = '16px sans-serif';
+
+      // Basado en screenPos.angle indicamos dirección cardinal simplificada
+      let dir = "";
+      const deg = (screenPos.angle * 180 / Math.PI + 360) % 360;
+      if (deg >= 337.5 || deg < 22.5) dir = "Derecha";
+      else if (deg >= 22.5 && deg < 67.5) dir = "Arriba-Derecha";
+      else if (deg >= 67.5 && deg < 112.5) dir = "Arriba";
+      else if (deg >= 112.5 && deg < 157.5) dir = "Arriba-Izquierda";
+      else if (deg >= 157.5 && deg < 202.5) dir = "Izquierda";
+      else if (deg >= 202.5 && deg < 247.5) dir = "Abajo-Izquierda";
+      else if (deg >= 247.5 && deg < 292.5) dir = "Abajo";
+      else if (deg >= 292.5 && deg < 337.5) dir = "Abajo-Derecha";
+
+      ctx.textAlign = "center";
+      ctx.fillText(dir, screenPos.x, screenPos.y - screenPos.size - marginText);
     }
 
     requestAnimationFrame(draw);
