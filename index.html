@@ -3,17 +3,15 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>MediaPipe + Goku + Giroscopio</title>
+<title>MediaPipe Flecha + Mano</title>
 <style>
-  html, body { margin:0; padding:0; height:100%; background:black; overflow:hidden; }
-  #video, #overlayCanvas { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; }
-  #overlayCanvas { pointer-events:none; }
+  html, body { margin:0; padding:0; background:black; overflow:hidden; }
+  canvas { display:block; width:100%; height:100%; }
   #status { position:absolute; bottom:10px; left:10px; background:rgba(0,0,0,0.5); padding:5px 10px; border-radius:5px; color:white; }
 </style>
 </head>
 <body>
-<video id="video" autoplay playsinline></video>
-<canvas id="overlayCanvas"></canvas>
+<canvas id="canvas"></canvas>
 <div id="status">Cargando...</div>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
@@ -21,28 +19,31 @@
 
 <script>
 (async () => {
-  const video = document.getElementById('video');
-  const canvas = document.getElementById('overlayCanvas');
+  const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
   const statusEl = document.getElementById('status');
 
-  const gokuImg = new Image();
-  gokuImg.src = 'https://cdn.pixabay.com/photo/2024/08/12/goku-ai-generated.png'; // ejemplo libre
+  // Flecha base
+  const arrowImg = new Image();
+  arrowImg.src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3c/Red_Arrow_Up.svg/768px-Red_Arrow_Up.svg.png';
 
-  // Variables para rotar Goku
+  // Giroscopio
   let gokuRotation = 0;
   window.addEventListener('deviceorientation', (event) => {
-    // gamma es inclinación izquierda-derecha
     if (event.gamma !== null) {
       gokuRotation = event.gamma * (Math.PI / 180);
     }
   });
 
-  // Cámara optimizada
+  // Config cámara
+  const video = document.createElement('video');
+  video.playsInline = true;
+  video.autoplay = true;
+  video.muted = true;
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, facingMode: 'environment' },
-      audio: false
+      video: { width: 640, height: 480, facingMode: 'environment' }
     });
     video.srcObject = stream;
   } catch (e) {
@@ -50,14 +51,15 @@
     return;
   }
 
-  function resizeCanvas(){
+  // Ajustar tamaño canvas
+  function resize() {
     canvas.width = video.videoWidth || window.innerWidth;
     canvas.height = video.videoHeight || window.innerHeight;
   }
-  video.onloadedmetadata = resizeCanvas;
-  window.onresize = resizeCanvas;
+  video.onloadedmetadata = resize;
+  window.onresize = resize;
 
-  // MediaPipe Hands
+  // MediaPipe
   const hands = new Hands({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
   hands.setOptions({
     selfieMode: false,
@@ -73,33 +75,35 @@
     statusEl.textContent = handLandmarks ? 'Mano detectada' : 'No se detecta mano';
   });
 
-  // Procesar menos frames (~15fps)
-  let lastProcess = 0;
-  async function processFrame(timestamp){
-    if (timestamp - lastProcess > 66) {
+  // Procesar frames
+  async function processFrame() {
+    if (video.videoWidth > 0) {
       await hands.send({image: video});
-      lastProcess = timestamp;
     }
     requestAnimationFrame(processFrame);
   }
   processFrame();
 
   // Dibujar
-  function draw(){
+  function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Dibujar landmarks si hay mano
+    // Video
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Mano
     if (handLandmarks) {
       drawConnectors(ctx, handLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
-      drawLandmarks(ctx, handLandmarks, {color: '#FF0000', lineWidth: 1});
+      drawLandmarks(ctx, handLandmarks, {color: '#FF0000', lineWidth: 2});
     }
 
-    // Dibujar Goku centrado y rotado según el teléfono
-    if (gokuImg.complete) {
+    // Flecha
+    if (arrowImg.complete) {
       ctx.save();
       ctx.translate(canvas.width/2, canvas.height/2);
       ctx.rotate(gokuRotation);
-      ctx.drawImage(gokuImg, -50, -75, 100, 150);
+      const size = 100;
+      ctx.drawImage(arrowImg, -size/2, -size/2, size, size);
       ctx.restore();
     }
 
