@@ -2,125 +2,155 @@
 <html lang="es">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>MediaPipe Flecha + Mano - Corregido</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>MediaPipe + Mano + Flecha - Inicio Manual</title>
 <style>
   html, body { margin:0; padding:0; background:black; overflow:hidden; height:100%; }
-  canvas { display:block; width:100%; height:100%; }
-  #status { position:absolute; bottom:10px; left:10px; background:rgba(0,0,0,0.5); padding:5px 10px; border-radius:5px; color:white; }
+  #canvas { display:block; width:100%; height:100%; }
+  #status { position:absolute; bottom:10px; left:10px; background:rgba(0,0,0,0.5); padding:5px 10px; border-radius:5px; color:white; z-index:10; }
+  #startBtn { position:absolute; top:50%; left:50%; transform: translate(-50%, -50%); font-size:1.5rem; padding:1rem 2rem; cursor:pointer; }
 </style>
 </head>
 <body>
 <canvas id="canvas"></canvas>
-<div id="status">Cargando...</div>
+<div id="status">Presiona "Iniciar" para activar cámara y detección</div>
+<button id="startBtn">Iniciar</button>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 
 <script>
-(async () => {
+(() => {
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
   const statusEl = document.getElementById('status');
+  const startBtn = document.getElementById('startBtn');
 
-  // Flecha base (esperamos que cargue)
-  const arrowImg = new Image();
-  arrowImg.src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3c/Red_Arrow_Up.svg/768px-Red_Arrow_Up.svg.png';
-
-  let arrowReady = false;
-  arrowImg.onload = () => {
-    arrowReady = true;
-  };
-  arrowImg.onerror = () => {
-    statusEl.textContent = 'Error cargando imagen de la flecha.';
-  };
-
-  // Giroscopio
+  let video, hands, handLandmarks = null;
   let gokuRotation = 0;
-  window.addEventListener('deviceorientation', (event) => {
-    if (event.gamma !== null) {
-      gokuRotation = event.gamma * (Math.PI / 180);
-    }
-  });
+  let streaming = false;
 
-  // Config cámara
-  const video = document.createElement('video');
-  video.playsInline = true;
-  video.autoplay = true;
-  video.muted = true;
-
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, facingMode: 'environment' }
-    });
-    video.srcObject = stream;
-  } catch (e) {
-    statusEl.textContent = 'Error cámara: ' + e.message;
-    return;
+  // Dibujar flecha simple en canvas (sin imagen externa)
+  function drawArrow(ctx, x, y, size, angle) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.fillStyle = 'red';
+    ctx.beginPath();
+    ctx.moveTo(0, -size / 2);
+    ctx.lineTo(size / 4, size / 4);
+    ctx.lineTo(0, size / 8);
+    ctx.lineTo(-size / 4, size / 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 
-  // Ajustar tamaño canvas
   function resize() {
     canvas.width = video.videoWidth || window.innerWidth;
     canvas.height = video.videoHeight || window.innerHeight;
   }
-  video.onloadedmetadata = () => {
-    resize();
-    statusEl.textContent = 'Cámara lista, esperando mano...';
-  };
-  window.onresize = resize;
 
-  // MediaPipe
-  const hands = new Hands({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
-  hands.setOptions({
-    selfieMode: false,
-    maxNumHands: 1,
-    modelComplexity: 0,
-    minDetectionConfidence: 0.3,
-    minTrackingConfidence: 0.3
-  });
+  async function start() {
+    startBtn.style.display = 'none';
+    statusEl.textContent = 'Solicitando cámara...';
 
-  let handLandmarks = null;
-  hands.onResults(results => {
-    handLandmarks = results.multiHandLandmarks && results.multiHandLandmarks[0] || null;
-    statusEl.textContent = handLandmarks ? 'Mano detectada' : 'No se detecta mano';
-  });
+    // Crear video
+    video = document.createElement('video');
+    video.playsInline = true;
+    video.autoplay = true;
+    video.muted = true;
 
-  // Procesar frames
-  async function processFrame() {
-    if (video.videoWidth > 0) {
-      await hands.send({image: video});
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'environment' }
+      });
+      video.srcObject = stream;
+    } catch (e) {
+      statusEl.textContent = 'Error cámara: ' + e.message;
+      startBtn.style.display = 'block';
+      return;
+    }
+
+    video.onloadedmetadata = () => {
+      resize();
+      statusEl.textContent = 'Cámara lista, esperando mano...';
+      streaming = true;
+      processFrame();
+      draw();
+    };
+
+    // Detectar orientación dispositivo (pedir permiso en iOS)
+    function setupOrientation() {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+          .then(permissionState => {
+            if (permissionState === 'granted') {
+              window.addEventListener('deviceorientation', onOrientation);
+            } else {
+              statusEl.textContent = 'Permiso para giroscopio denegado.';
+            }
+          }).catch(() => {
+            statusEl.textContent = 'Permiso para giroscopio denegado.';
+          });
+      } else {
+        window.addEventListener('deviceorientation', onOrientation);
+      }
+    }
+
+    function onOrientation(event) {
+      if (event.gamma !== null) {
+        gokuRotation = event.gamma * (Math.PI / 180);
+      }
+    }
+
+    setupOrientation();
+
+    // MediaPipe Hands
+    hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+    hands.setOptions({
+      selfieMode: false,
+      maxNumHands: 1,
+      modelComplexity: 0,
+      minDetectionConfidence: 0.3,
+      minTrackingConfidence: 0.3
+    });
+
+    hands.onResults(results => {
+      handLandmarks = results.multiHandLandmarks && results.multiHandLandmarks[0] || null;
+      statusEl.textContent = handLandmarks ? 'Mano detectada' : 'No se detecta mano';
+    });
+  }
+
+  // Procesar frames ~15fps
+  let lastProcess = 0;
+  async function processFrame(timestamp=0) {
+    if (!streaming) return;
+    if (timestamp - lastProcess > 66) {
+      await hands.send({ image: video });
+      lastProcess = timestamp;
     }
     requestAnimationFrame(processFrame);
   }
-  processFrame();
 
-  // Dibujar
+  // Dibujar todo
   function draw() {
+    if (!streaming) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Video
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Mano
     if (handLandmarks) {
-      drawConnectors(ctx, handLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
-      drawLandmarks(ctx, handLandmarks, {color: '#FF0000', lineWidth: 2});
+      drawConnectors(ctx, handLandmarks, HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 2 });
+      drawLandmarks(ctx, handLandmarks, { color: '#FF0000', lineWidth: 2 });
     }
 
-    // Flecha
-    if (arrowReady) {
-      ctx.save();
-      ctx.translate(canvas.width/2, canvas.height/2);
-      ctx.rotate(gokuRotation);
-      const size = 100;
-      ctx.drawImage(arrowImg, -size/2, -size/2, size, size);
-      ctx.restore();
-    }
+    // Flecha roja en centro rotando con el celular
+    drawArrow(ctx, canvas.width / 2, canvas.height / 2, 80, gokuRotation);
 
     requestAnimationFrame(draw);
   }
-  draw();
+
+  startBtn.onclick = start;
 })();
 </script>
 </body>
