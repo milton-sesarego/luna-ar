@@ -1,157 +1,323 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>MediaPipe + Mano + Flecha - Inicio Manual</title>
-<style>
-  html, body { margin:0; padding:0; background:black; overflow:hidden; height:100%; }
-  #canvas { display:block; width:100%; height:100%; }
-  #status { position:absolute; bottom:10px; left:10px; background:rgba(0,0,0,0.5); padding:5px 10px; border-radius:5px; color:white; z-index:10; }
-  #startBtn { position:absolute; top:50%; left:50%; transform: translate(-50%, -50%); font-size:1.5rem; padding:1rem 2rem; cursor:pointer; }
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>AR Agua + Botella (simulado)</title>
+  <style>
+    html,body { height:100%; margin:0; background:#000; overflow:hidden; }
+    #videoBg {
+      position:fixed; inset:0; width:100%; height:100%; object-fit:cover;
+      transform:scaleX(-1); /* espejo para que se sienta como cámara frontal */
+      z-index:0;
+    }
+    canvas { position:fixed; inset:0; z-index:1; touch-action:none; }
+    #ui {
+      position:fixed; left:8px; top:8px; z-index:2; color:#fff; font-family:sans-serif;
+      background:rgba(0,0,0,0.35); padding:8px 10px; border-radius:8px;
+      backdrop-filter: blur(6px);
+    }
+    button { margin-left:6px; }
+    .hint { font-size:12px; opacity:0.9; }
+  </style>
 </head>
 <body>
-<canvas id="canvas"></canvas>
-<div id="status">Presiona "Iniciar" para activar cámara y detección</div>
-<button id="startBtn">Iniciar</button>
+  <video id="videoBg" autoplay playsinline muted></video>
+  <div id="ui">
+    <div>AR Agua — Botella flotante</div>
+    <div class="hint">Permite cámara y sensores. Toca para recentrar.</div>
+    <div style="margin-top:6px">
+      <button id="btnRequestSensors">Permitir sensores (iOS)</button>
+      <button id="btnRecentre">Recentrar</button>
+    </div>
+  </div>
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.155.0/build/three.module.js';
 
-<script>
-(() => {
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
-  const statusEl = document.getElementById('status');
-  const startBtn = document.getElementById('startBtn');
+    // --- video background (camera) ---
+    const video = document.getElementById('videoBg');
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio:false });
+        video.srcObject = stream;
+        await video.play();
+      } catch (e) {
+        alert('No se pudo abrir la cámara. Revisa permisos y HTTPS. ' + e.message);
+      }
+    }
+    startCamera();
 
-  let video, hands, handLandmarks = null;
-  let gokuRotation = 0;
-  let streaming = false;
+    // --- THREE setup ---
+    const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    document.body.appendChild(renderer.domElement);
 
-  // Dibujar flecha simple en canvas (sin imagen externa)
-  function drawArrow(ctx, x, y, size, angle) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angle);
-    ctx.fillStyle = 'red';
-    ctx.beginPath();
-    ctx.moveTo(0, -size / 2);
-    ctx.lineTo(size / 4, size / 4);
-    ctx.lineTo(0, size / 8);
-    ctx.lineTo(-size / 4, size / 4);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
+    const scene = new THREE.Scene();
 
-  function resize() {
-    canvas.width = video.videoWidth || window.innerWidth;
-    canvas.height = video.videoHeight || window.innerHeight;
-  }
+    // camera sits at origin; we won't move it — we'll move objects relative to device sensors
+    const camera = new THREE.PerspectiveCamera(50, 2, 0.01, 1000);
+    camera.position.set(0, 1.6, 0); // nariz/ojos aprox
 
-  async function start() {
-    startBtn.style.display = 'none';
-    statusEl.textContent = 'Solicitando cámara...';
+    // resize
+    function onResize() {
+      const w = window.innerWidth, h = window.innerHeight;
+      renderer.setSize(w,h);
+      camera.aspect = w/h;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', onResize, false);
+    onResize();
 
-    // Crear video
-    video = document.createElement('video');
-    video.playsInline = true;
-    video.autoplay = true;
-    video.muted = true;
+    // --- simple ambient lighting to blend with camera feed ---
+    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    dir.position.set(5,10,2);
+    scene.add(dir);
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: 'environment' }
-      });
-      video.srcObject = stream;
-    } catch (e) {
-      statusEl.textContent = 'Error cámara: ' + e.message;
-      startBtn.style.display = 'block';
-      return;
+    // --- WATER: large inverted cylinder around camera with shader for horizon + subtle waves ---
+    const waterRadius = 200;
+    const waterHeight = 40;
+    const waterGeo = new THREE.CylinderGeometry(waterRadius, waterRadius, waterHeight, 128, 1, true);
+    // rotate so open seam is at bottom
+    waterGeo.rotateZ(Math.PI/2);
+
+    const waterMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      transparent: false,
+      uniforms: {
+        time: { value: 0 },
+        horizonColor: { value: new THREE.Color(0x90d0ff) },
+        waterColor: { value: new THREE.Color(0x0b5ea6) },
+        waveAmp: { value: 0.6 },
+        waveFreq: { value: 0.8 }
+      },
+      vertexShader: `
+        uniform float time;
+        uniform float waveAmp;
+        uniform float waveFreq;
+        varying vec3 vPos;
+        void main(){
+          vPos = position;
+          // small vertical displacement to simulate moving surface bands
+          float w = sin((position.x+time*1.4)*waveFreq)*0.8 + sin((position.z+time)*waveFreq*0.6);
+          vec3 displaced = position + normal * (w * waveAmp);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 horizonColor;
+        uniform vec3 waterColor;
+        varying vec3 vPos;
+        void main(){
+          // use vertical coordinate to blend horizon (lighter) vs deep water (darker)
+          float t = smoothstep(-5.0, 15.0, vPos.y);
+          // subtle radial darkening for depth
+          float r = length(vPos.xz) / ${waterRadius.toFixed(1)};
+          float radial = smoothstep(0.0, 1.0, r);
+          vec3 col = mix(waterColor, horizonColor, t);
+          col = mix(col, col * 0.5, radial * 0.6);
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `
+    });
+    const water = new THREE.Mesh(waterGeo, waterMat);
+    water.position.y = -2.0; // ajuste para que el horizonte quede a la altura de la cámara
+    scene.add(water);
+
+    // --- BOTELLA: model sencillo compuesto por cuerpos básicos ---
+    function makeBottle() {
+      const group = new THREE.Group();
+
+      // body
+      const bodyGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.6, 24);
+      const bodyMat = new THREE.MeshStandardMaterial({ color:0x7fd0ff, metalness:0.05, roughness:0.15, transparent:true, opacity:0.95 });
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.y = 0;
+      group.add(body);
+
+      // neck
+      const neckGeo = new THREE.CylinderGeometry(0.06, 0.07, 0.18, 16);
+      const neck = new THREE.Mesh(neckGeo, bodyMat);
+      neck.position.y = 0.36;
+      group.add(neck);
+
+      // cap
+      const capGeo = new THREE.SphereGeometry(0.065, 12, 8);
+      const capMat = new THREE.MeshStandardMaterial({ color:0x333333, metalness:0.6, roughness:0.3 });
+      const cap = new THREE.Mesh(capGeo, capMat);
+      cap.scale.set(1,0.6,1);
+      cap.position.y = 0.45;
+      group.add(cap);
+
+      // small liquid inside (slightly darker)
+      const liquidGeo = new THREE.CylinderGeometry(0.115, 0.115, 0.45, 20);
+      const liquidMat = new THREE.MeshStandardMaterial({ color:0x0b4f77, transparent:true, opacity:0.35 });
+      const liquid = new THREE.Mesh(liquidGeo, liquidMat);
+      liquid.position.y = -0.05;
+      group.add(liquid);
+
+      // rotate so bottle's "front" faces camera initially
+      group.rotation.y = Math.PI;
+      return group;
     }
 
-    video.onloadedmetadata = () => {
-      resize();
-      statusEl.textContent = 'Cámara lista, esperando mano...';
-      streaming = true;
-      processFrame();
-      draw();
-    };
+    const bottle = makeBottle();
+    scene.add(bottle);
 
-    // Detectar orientación dispositivo (pedir permiso en iOS)
-    function setupOrientation() {
+    // initial bottle position: in front at 1.8m and 10cm below eye level
+    let bottleDistance = 1.8;
+    let bottleOffsetY = -0.1;
+    bottle.position.set(0, camera.position.y + bottleOffsetY, -bottleDistance);
+
+    // keep a stable "world" quaternion adjusted by device orientation; start identity
+    let worldQuaternion = new THREE.Quaternion();
+
+    // device orientation handling
+    let haveOrientation = false;
+    let screenTransform = new THREE.Quaternion();
+    // helper to convert device orientation Euler (alpha,beta,gamma) to quaternion similar to DeviceOrientationControls
+    function setFromDeviceOrientation(alpha, beta, gamma) {
+      const _degToRad = Math.PI / 180;
+      const _alpha = alpha ? alpha * _degToRad : 0; // Z
+      const _beta  = beta  ? beta  * _degToRad : 0; // X'
+      const _gamma = gamma ? gamma * _degToRad : 0; // Y''
+      // Z-X'-Y'' intrinsic rotation
+      const euler = new THREE.Euler();
+      euler.set(_beta, _alpha, -_gamma, 'ZXY'); // ordering to match many implementations
+      const q = new THREE.Quaternion().setFromEuler(euler);
+      // rotate 90deg about X to align device coords to world coords (portrait adjustment)
+      const adjust = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), -Math.PI/2);
+      q.multiply(adjust);
+      return q;
+    }
+
+    // permission helper for iOS 13+ (deviceorientation requires explicit permission)
+    const btnRequestSensors = document.getElementById('btnRequestSensors');
+    async function requestIOSPermission() {
       if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        DeviceOrientationEvent.requestPermission()
-          .then(permissionState => {
-            if (permissionState === 'granted') {
-              window.addEventListener('deviceorientation', onOrientation);
-            } else {
-              statusEl.textContent = 'Permiso para giroscopio denegado.';
-            }
-          }).catch(() => {
-            statusEl.textContent = 'Permiso para giroscopio denegado.';
-          });
+        try {
+          const resp = await DeviceOrientationEvent.requestPermission();
+          if (resp === 'granted') {
+            startOrientationListening();
+            btnRequestSensors.style.display = 'none';
+          } else {
+            alert('Permiso sensores denegado.');
+          }
+        } catch (err) {
+          alert('No se pudo solicitar permiso de sensores: ' + err.message);
+        }
       } else {
-        window.addEventListener('deviceorientation', onOrientation);
+        startOrientationListening();
+        btnRequestSensors.style.display = 'none';
       }
     }
+    btnRequestSensors.addEventListener('click', requestIOSPermission);
 
-    function onOrientation(event) {
-      if (event.gamma !== null) {
-        gokuRotation = event.gamma * (Math.PI / 180);
+    function startOrientationListening() {
+      window.addEventListener('deviceorientation', (e) => {
+        if (e.alpha === null && e.beta === null && e.gamma === null) return;
+        haveOrientation = true;
+        const q = setFromDeviceOrientation(e.alpha, e.beta, e.gamma);
+        // store world quaternion (camera orientation)
+        worldQuaternion.copy(q);
+      });
+    }
+    // start by attempting to listen (non-iOS usually works without request)
+    startOrientationListening();
+
+    // on touch / button -> recenter (reset transforms)
+    function recentre() {
+      worldQuaternion.identity();
+      bottle.position.set(0, camera.position.y + bottleOffsetY, -bottleDistance);
+    }
+    document.getElementById('btnRecentre').addEventListener('click', recentre);
+    window.addEventListener('touchstart', (ev) => {
+      // quick recenter on long touch? here we recentre if two-finger tap
+      if (ev.touches && ev.touches.length >= 2) recentre();
+    });
+
+    // allow pinch to change bottle distance
+    let lastTouchDist = null;
+    window.addEventListener('touchmove', (ev) => {
+      if (ev.touches && ev.touches.length === 2) {
+        const t0 = ev.touches[0], t1 = ev.touches[1];
+        const dx = t0.clientX - t1.clientX, dy = t0.clientY - t1.clientY;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (lastTouchDist !== null) {
+          const diff = (dist - lastTouchDist) * 0.005;
+          bottleDistance = Math.max(0.6, Math.min(6, bottleDistance - diff));
+        }
+        lastTouchDist = dist;
       }
+    }, {passive:true});
+    window.addEventListener('touchend', (ev) => { if (!ev.touches || ev.touches.length < 2) lastTouchDist = null; });
+
+    // small helper: get forward vector from worldQuaternion (device orientation)
+    const forward = new THREE.Vector3(0,0,-1);
+    const up = new THREE.Vector3(0,1,0);
+    const tmpVec = new THREE.Vector3();
+
+    // animation loop
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+
+      // animate water time uniform
+      waterMat.uniforms.time.value = t;
+
+      // bottle bobbing (sinusoidal) + small rotation
+      const bob = Math.sin(t * 1.6) * 0.06; // up-down
+      const sway = Math.sin(t * 0.9) * 0.03;
+      bottle.position.y = camera.position.y + bottleOffsetY + bob;
+
+      // compute bottle position in front of camera using device orientation if available
+      if (haveOrientation) {
+        // compute forward in world coordinates
+        const deviceForward = forward.clone().applyQuaternion(worldQuaternion);
+        // compute right and up too if needed
+        const deviceUp = up.clone().applyQuaternion(worldQuaternion);
+        // place bottle at camera position + forward * distance
+        const target = new THREE.Vector3().copy(camera.position).add(deviceForward.multiplyScalar(bottleDistance));
+        // slight sway relative to device orientation
+        target.x += Math.sin(t*0.6)*0.02;
+        target.z += Math.cos(t*0.5)*0.02;
+        // smooth movement
+        bottle.position.lerp(target, 0.18);
+        // orient bottle to face camera a little
+        const lookAtPos = camera.position.clone();
+        bottle.lookAt(lookAtPos);
+        bottle.rotateX(sway); // small extra rotation
+      } else {
+        // fallback: slowly orbit in front
+        const ang = t * 0.2;
+        const target = new THREE.Vector3(Math.sin(ang)*0.1, camera.position.y + bottleOffsetY, -bottleDistance + Math.cos(ang)*0.05);
+        bottle.position.lerp(target, 0.05);
+        bottle.lookAt(camera.position);
+      }
+
+      renderer.render(scene, camera);
     }
+    animate();
 
-    setupOrientation();
+    // request permission prompt for iOS appears only after user gesture sometimes
+    // We try to hide the button if permission not needed.
+    (async function checkIOSPermissionButton() {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        // show button
+        btnRequestSensors.style.display = '';
+      } else {
+        btnRequestSensors.style.display = 'none';
+      }
+    })();
 
-    // MediaPipe Hands
-    hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
-    hands.setOptions({
-      selfieMode: false,
-      maxNumHands: 1,
-      modelComplexity: 0,
-      minDetectionConfidence: 0.3,
-      minTrackingConfidence: 0.3
-    });
+    // some small UX touches
+    // ensure canvas sits over video and is interactive
+    renderer.domElement.style.pointerEvents = 'auto';
 
-    hands.onResults(results => {
-      handLandmarks = results.multiHandLandmarks && results.multiHandLandmarks[0] || null;
-      statusEl.textContent = handLandmarks ? 'Mano detectada' : 'No se detecta mano';
-    });
-  }
-
-  // Procesar frames ~15fps
-  let lastProcess = 0;
-  async function processFrame(timestamp=0) {
-    if (!streaming) return;
-    if (timestamp - lastProcess > 66) {
-      await hands.send({ image: video });
-      lastProcess = timestamp;
-    }
-    requestAnimationFrame(processFrame);
-  }
-
-  // Dibujar todo
-  function draw() {
-    if (!streaming) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    if (handLandmarks) {
-      drawConnectors(ctx, handLandmarks, HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 2 });
-      drawLandmarks(ctx, handLandmarks, { color: '#FF0000', lineWidth: 2 });
-    }
-
-    // Flecha roja en centro rotando con el celular
-    drawArrow(ctx, canvas.width / 2, canvas.height / 2, 80, gokuRotation);
-
-    requestAnimationFrame(draw);
-  }
-
-  startBtn.onclick = start;
-})();
-</script>
+    // Info: if you want the bottle to "collide" with floor or anchors, you'd need WebXR or world-mapping.
+    // This demo uses sensors to place a virtual bottle at a fixed distance in front of the device.
+  </script>
 </body>
 </html>
