@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>MediaPipe Flecha + Mano</title>
+<title>MediaPipe Flecha + Mano - Corregido</title>
 <style>
-  html, body { margin:0; padding:0; background:black; overflow:hidden; }
+  html, body { margin:0; padding:0; background:black; overflow:hidden; height:100%; }
   canvas { display:block; width:100%; height:100%; }
   #status { position:absolute; bottom:10px; left:10px; background:rgba(0,0,0,0.5); padding:5px 10px; border-radius:5px; color:white; }
 </style>
@@ -23,9 +23,17 @@
   const ctx = canvas.getContext('2d');
   const statusEl = document.getElementById('status');
 
-  // Flecha base
+  // Flecha base (esperamos que cargue)
   const arrowImg = new Image();
   arrowImg.src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3c/Red_Arrow_Up.svg/768px-Red_Arrow_Up.svg.png';
+
+  let arrowReady = false;
+  arrowImg.onload = () => {
+    arrowReady = true;
+  };
+  arrowImg.onerror = () => {
+    statusEl.textContent = 'Error cargando imagen de la flecha.';
+  };
 
   // Giroscopio
   let gokuRotation = 0;
@@ -56,7 +64,10 @@
     canvas.width = video.videoWidth || window.innerWidth;
     canvas.height = video.videoHeight || window.innerHeight;
   }
-  video.onloadedmetadata = resize;
+  video.onloadedmetadata = () => {
+    resize();
+    statusEl.textContent = 'Cámara lista, esperando mano...';
+  };
   window.onresize = resize;
 
   // MediaPipe
@@ -98,7 +109,7 @@
     }
 
     // Flecha
-    if (arrowImg.complete) {
+    if (arrowReady) {
       ctx.save();
       ctx.translate(canvas.width/2, canvas.height/2);
       ctx.rotate(gokuRotation);
