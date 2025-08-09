@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Luna en AR - Demo</title>
+<style>
+  body, html {
+    margin: 0; padding: 0; overflow: hidden; background: black;
+    height: 100%; width: 100%;
+    font-family: sans-serif;
+    color: white;
+  }
+  #videoElement {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    z-index: 0;
+  }
+  #overlay {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 1;
+    pointer-events: none;
+  }
+  #info {
+    position: fixed;
+    bottom: 5px; left: 5px;
+    z-index: 2;
+    background: rgba(0,0,0,0.5);
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+
+<video id="videoElement" autoplay playsinline></video>
+<canvas id="overlay"></canvas>
+<div id="info">Punto rojo = posición aproximada de la luna</div>
+
+<script src="https://cdn.jsdelivr.net/npm/suncalc@1.9.0/suncalc.js"></script>
+<script>
+(async () => {
+  const video = document.getElementById('videoElement');
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  const info = document.getElementById('info');
+
+  // Ajustar canvas a tamaño ventana
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Acceso cámara trasera
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { exact: "environment" } },
+      audio: false
+    });
+    video.srcObject = stream;
+  } catch (e) {
+    info.textContent = "Error accediendo a la cámara: " + e.message;
+    return;
+  }
+
+  // Obtener ubicación
+  function getPosition() {
+    return new Promise((res, rej) => {
+      if (!navigator.geolocation) {
+        rej("Geolocalización no soportada");
+      } else {
+        navigator.geolocation.getCurrentPosition(pos => {
+          res({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+        }, err => {
+          rej("No se pudo obtener ubicación: " + err.message);
+        }, { enableHighAccuracy: true, timeout: 10000 });
+      }
+    });
+  }
+
+  let lat, lon;
+  try {
+    const pos = await getPosition();
+    lat = pos.lat;
+    lon = pos.lon;
+  } catch (e) {
+    info.textContent = e;
+    return;
+  }
+
+  info.textContent = "Apunta el celular hacia el cielo para ver la luna (círculo rojo).";
+
+  // Variables para orientación
+  let alpha = 0, beta = 0, gamma = 0; // en grados
+
+  window.addEventListener('deviceorientation', (event) => {
+    // event.alpha = rotación respecto al norte (compass)
+    // event.beta = inclinación frontal (nodding)
+    // event.gamma = inclinación lateral (head tilt)
+    alpha = event.alpha || 0;
+    beta = event.beta || 0;
+    gamma = event.gamma || 0;
+  }, true);
+
+  // Convertir grados a radianes
+  const toRad = deg => deg * Math.PI / 180;
+  const toDeg = rad => rad * 180 / Math.PI;
+
+  // Función para calcular la posición de la luna en coordenadas azimut y altitud
+  function getMoonPos(date, lat, lon) {
+    const moonPos = SunCalc.getMoonPosition(date, lat, lon);
+    return {
+      azimuth: moonPos.azimuth,   // radianes desde el norte, positivo hacia el este (sur en el medio)
+      altitude: moonPos.altitude  // radianes sobre el horizonte
+    };
+  }
+
+  // Función para mapear azimut y altitud a coordenadas en pantalla
+  // Se asume que el teléfono apunta hacia un ángulo alpha (compass)
+  // y que beta es la inclinación hacia arriba (+90 es pantalla mirando arriba)
+  // gamma se ignora para simplicidad
+  function mapMoonToScreen(azimuth, altitude, alpha, beta) {
+    // Ajustamos azimut y alpha para que 0 sea norte
+    // alpha va de 0 a 360, azimuth de -PI a PI
+    // Convertimos alpha a radianes
+    const alphaRad = toRad(alpha);
+    // Diferencia horizontal entre orientación y luna
+    let deltaAz = azimuth - alphaRad;
+    // Normalizar entre -PI y PI
+    if (deltaAz > Math.PI) deltaAz -= 2 * Math.PI;
+    if (deltaAz < -Math.PI) deltaAz += 2 * Math.PI;
+
+    // Consideramos que el rango horizontal visible en pantalla es +/- 45 grados (pi/4)
+    // Si la luna está fuera de ese rango, no la mostramos
+
+    const horizontalFOV = Math.PI / 2; // 90 grados FOV horizontal para más margen
+
+    if (Math.abs(deltaAz) > horizontalFOV / 2) return null;
+
+    // Para vertical, beta = 0 es horizontal, +90 es apuntando al cielo
+    // La altitud está entre -pi/2 y +pi/2
+    // Asumimos rango vertical visible de 90 grados (pi/2)
+    const verticalFOV = Math.PI / 2; // 90 grados vertical
+
+    // Diferencia vertical
+    const deltaAlt = altitude - toRad(beta);
+
+    if (deltaAlt < -verticalFOV / 2 || deltaAlt > verticalFOV / 2) return null;
+
+    // Mapeamos a pantalla
+    // x = centro pantalla + (deltaAz / (horizontalFOV/2)) * (ancho/2)
+    // y = centro pantalla - (deltaAlt / (verticalFOV/2)) * (alto/2)
+    // Nota y invertida porque pantalla tiene y hacia abajo
+
+    const x = (canvas.width / 2) + (deltaAz / (horizontalFOV / 2)) * (canvas.width / 2);
+    const y = (canvas.height / 2) - (deltaAlt / (verticalFOV / 2)) * (canvas.height / 2);
+
+    return { x, y };
+  }
+
+  // Loop para dibujar el marcador
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const now = new Date();
+    const moonPos = getMoonPos(now, lat, lon);
+    const screenPos = mapMoonToScreen(moonPos.azimuth, moonPos.altitude, alpha, beta);
+
+    if (screenPos) {
+      ctx.beginPath();
+      ctx.arc(screenPos.x, screenPos.y, 20, 0, 2 * Math.PI);
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'white';
+      ctx.stroke();
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  draw();
+
+})();
+</script>
+
+</body>
+</html>
